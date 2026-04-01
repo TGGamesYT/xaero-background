@@ -1,52 +1,114 @@
 package me.tg.xaerobackground.client.mixin;
 
+import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.platform.DepthTestFunction;
 import com.mojang.blaze3d.systems.RenderSystem;
-import net.minecraft.client.gl.Framebuffer;
+import com.mojang.blaze3d.textures.GpuTextureView;
+import com.mojang.blaze3d.vertex.VertexFormat;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gl.RenderPipelines;
+import net.minecraft.client.gl.SimpleFramebuffer;
+import net.minecraft.client.render.VertexFormats;
+import net.minecraft.client.texture.AbstractTexture;
+import net.minecraft.util.Identifier;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import xaero.map.graphics.ImprovedFramebuffer;
 import xaero.map.gui.GuiMap;
-import xaero.map.graphics.TextureUtils;
+import me.tg.xaerobackground.client.XaerobackgroundClient;
+
+import java.util.OptionalInt;
 
 /**
- * Redirect the specific TextureUtils.clearRenderTarget(FBO, color, depth) call in GuiMap.render
- * and convert the black clear used by Xaero for that FBO into a transparent clear so wallpaper shows through.
+ * After Xaero finishes rendering all tile textures into its FBO (primaryScaleFBO)
+ * but before it restores the MC main framebuffer, run a post-process pass that
+ * replaces every opaque-black pixel (R=G=B=0, A=1) — the colour Xaero uses for
+ * unexplored map sub-areas — with the corresponding wallpaper pixel.
  *
- * NOTE: this redirect targets the exact invocation in GuiMap.render that calls TextureUtils.clearRenderTarget(primaryScaleFBO, -16777216, 1.0F).
- * If Xaero changes that call signature or the numeric literal, you'll need to update the target.
+ * The pass uses a ping-pong strategy:
+ *   1. Render (mapFbo + wallpaper) -> tempFbo  using the custom "wallpaper_replace_black" shader.
+ *   2. Blit tempFbo -> mapFbo               using the standard ENTITY_OUTLINE_BLIT pipeline.
+ *
+ * Xaero then composites mapFbo onto the screen normally, now with wallpaper
+ * visible wherever tiles had black unexplored sub-areas.
  */
 @Mixin(GuiMap.class)
 public class GuiMapBackgroundMixin {
+
+    /**
+     * Custom pipeline: two-sampler blit that replaces opaque black with wallpaper.
+     *   InSampler      = Xaero's rendered map FBO texture
+     *   WallpaperSampler = wallpaper texture
+     */
+    private static final RenderPipeline WALLPAPER_REPLACE_PIPELINE = RenderPipelines.register(
+            RenderPipeline.builder()
+                    .withLocation(Identifier.of("xaerobackground", "pipeline/wallpaper_replace_black"))
+                    .withVertexShader("core/blit_screen")   // reuse minecraft:core/blit_screen.vsh
+                    .withFragmentShader(Identifier.of("xaerobackground", "core/wallpaper_replace_black"))
+                    .withSampler("InSampler")
+                    .withSampler("WallpaperSampler")
+                    .withoutBlend()
+                    .withDepthWrite(false)
+                    .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
+                    .withColorWrite(true, true)
+                    .withVertexFormat(VertexFormats.POSITION, VertexFormat.DrawMode.QUADS)
+                    .build()
+    );
+
+    /** Ping-pong FBO; lazily created and resized to match Xaero's FBO. */
+    private static SimpleFramebuffer tempFbo = null;
 
     @Redirect(
             method = "render",
             at = @At(
                     value = "INVOKE",
-                    // This target string should match the invocation in the decompiled code you pasted earlier.
-                    target = "Lxaero/map/graphics/TextureUtils;clearRenderTarget(Lnet/minecraft/client/gl/Framebuffer;IF)V"
+                    target = "Lxaero/map/graphics/ImprovedFramebuffer;bindDefaultFramebuffer(Lnet/minecraft/client/MinecraftClient;)V"
             )
     )
-    private void redirectClearRenderTarget(Framebuffer renderTarget, int color, float depth) {
-        // Only modify the exact call that clears to full opaque black with depth 1.0,
-        // otherwise keep normal behaviour to avoid changing unrelated clears.
-        if (color == -16777216 && depth == 1.0F) {
-            // clear to fully transparent black instead of opaque black
-            int transparentBlack = 0x00000000;
-            // Use the same API call as TextureUtils would (device command encoder)
-            RenderSystem.getDevice().createCommandEncoder().clearColorAndDepthTextures(
-                    renderTarget.getColorAttachment(),
-                    transparentBlack,
-                    renderTarget.getDepthAttachment(),
-                    (double)depth
-            );
-        } else {
-            // fallback: perform the original clear (same as TextureUtils)
-            RenderSystem.getDevice().createCommandEncoder().clearColorAndDepthTextures(
-                    renderTarget.getColorAttachment(),
-                    color,
-                    renderTarget.getDepthAttachment(),
-                    (double)depth
-            );
+    private void redirectBindDefaultFramebuffer(ImprovedFramebuffer mapFbo, MinecraftClient mc) {
+        if (XaerobackgroundClient.WALLPAPER_NATIVE != null && mc.getTextureManager() != null) {
+            AbstractTexture wallpaperTex = mc.getTextureManager().getTexture(XaerobackgroundClient.WALLPAPER_ID);
+            GpuTextureView wallpaperView = wallpaperTex.getGlTextureView();
+
+            if (wallpaperView != null) {
+                // Ensure tempFbo matches mapFbo dimensions
+                int w = mapFbo.textureWidth;
+                int h = mapFbo.textureHeight;
+                if (tempFbo == null || tempFbo.textureWidth != w || tempFbo.textureHeight != h) {
+                    if (tempFbo != null) tempFbo.delete();
+                    tempFbo = new SimpleFramebuffer("xaerobackground_temp", w, h, false);
+                }
+
+                var seqBuf = RenderSystem.getSequentialBuffer(VertexFormat.DrawMode.QUADS);
+                var indexBuffer = seqBuf.getIndexBuffer(6);
+                var vertexBuffer = RenderSystem.getQuadVertexBuffer();
+
+                // Step 1: post-process mapFbo + wallpaper → tempFbo
+                var renderPass = RenderSystem.getDevice().createCommandEncoder()
+                        .createRenderPass(
+                                () -> "xaerobackground_replace_black",
+                                tempFbo.getColorAttachmentView(),
+                                OptionalInt.empty()
+                        );
+                try {
+                    renderPass.setPipeline(WALLPAPER_REPLACE_PIPELINE);
+                    RenderSystem.bindDefaultUniforms(renderPass);
+                    renderPass.setVertexBuffer(0, vertexBuffer);
+                    renderPass.setIndexBuffer(indexBuffer, seqBuf.getIndexType());
+                    renderPass.bindSampler("InSampler", mapFbo.getColorAttachmentView());
+                    renderPass.bindSampler("WallpaperSampler", wallpaperView);
+                    renderPass.drawIndexed(0, 0, 6, 1);
+                } finally {
+                    renderPass.close();
+                }
+
+                // Step 2: copy processed result back into Xaero's FBO
+                tempFbo.drawBlit(mapFbo.getColorAttachmentView());
+            }
         }
+
+        // Restore original framebuffer
+        mapFbo.bindDefaultFramebuffer(mc);
     }
 }

@@ -43,8 +43,8 @@ dependencies {
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
 
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-    runtimeOnly files("libs/XaerosWorldMap_1.39.13_Fabric_1.21.8.jar")
-    compileOnly files("libs/XaerosWorldMap_1.39.13_Fabric_1.21.8.jar")
+    modRuntimeOnly files("libs/XaerosWorldMap_1.39.13_Fabric_1.21.8.jar")
+    modCompileOnly files("libs/XaerosWorldMap_1.39.13_Fabric_1.21.8.jar")
 }
 
 processResources {

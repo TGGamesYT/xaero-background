@@ -1,16 +1,11 @@
 package me.tg.xaerobackground.client.mixin;
 
-import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
-import net.minecraft.util.Identifier;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import xaero.map.gui.GuiMap;
-import me.tg.xaerobackground.client.XaerobackgroundClient;
-
-import static me.tg.xaerobackground.client.XaerobackgroundClient.WALLPAPER_ID;
 
 /**
  * Draw wallpaper behind everything at the very start of GuiMap.render.
@@ -22,23 +17,9 @@ public class BackgroundMixin {
 
     @Inject(method = "render", at = @At("HEAD"))
     private void drawWallpaperHead(DrawContext guiGraphics, int mouseX, int mouseY, float partialTicks, CallbackInfo ci) {
-        // wallpaper must already be registered with the texture manager
-        if (XaerobackgroundClient.WALLPAPER_NATIVE == null) return;
-
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc == null) return;
-
-        int scaledW = mc.getWindow().getScaledWidth();
-        int scaledH = mc.getWindow().getScaledHeight();
-        if (scaledW <= 0 || scaledH <= 0) return;
-
-        // draw full-screen wallpaper in scaled GUI coordinates
-        guiGraphics.drawTexturedQuad(
-                WALLPAPER_ID,
-                0, 0,            // top-left
-                scaledW, scaledH,// bottom-right
-                0f, 1f,          // u1,u2
-                0f, 1f           // v1,v2
-        );
+        // Wallpaper is now drawn directly into Xaero's FBO by GuiMapBackgroundMixin
+        // before tiles are rendered, so it only appears where chunks are unloaded.
+        // Drawing it here in screen-space (via batched DrawContext) would flush after
+        // Xaero's FBO composite and incorrectly cover loaded chunks as well.
     }
 }
