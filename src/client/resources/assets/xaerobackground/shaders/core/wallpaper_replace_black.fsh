@@ -8,9 +8,13 @@ out vec4 fragColor;
 
 void main() {
     vec4 mapColor = texture(InSampler, texCoord);
-    // Replace opaque black pixels (unexplored areas) with the wallpaper.
-    // Xaero tiles use pure black (r=g=b=0, a=1) for unexplored sub-areas.
-    if (mapColor.r < 0.01 && mapColor.g < 0.01 && mapColor.b < 0.01 && mapColor.a > 0.99) {
+
+    // Replace any pixel that is very dark (pure black = unexplored, or dark hover
+    // highlight blended over unexplored black) with the wallpaper.
+    // Real terrain colors are never this dark because Xaero tints them from actual
+    // block colors, which always have at least some saturation or brightness.
+    float maxChannel = max(mapColor.r, max(mapColor.g, mapColor.b));
+    if (maxChannel < 0.1 && mapColor.a > 0.5) {
         fragColor = vec4(texture(WallpaperSampler, texCoord).rgb, 1.0);
     } else {
         fragColor = vec4(mapColor.rgb, 1.0);

@@ -23,28 +23,28 @@ import java.util.OptionalInt;
 /**
  * After Xaero finishes rendering all tile textures into its FBO (primaryScaleFBO)
  * but before it restores the MC main framebuffer, run a post-process pass that
- * replaces every opaque-black pixel (R=G=B=0, A=1) — the colour Xaero uses for
- * unexplored map sub-areas — with the corresponding wallpaper pixel.
+ * replaces every very-dark pixel — pure black (unexplored) or dark hover-highlight
+ * blended over black — with the corresponding wallpaper pixel.
  *
  * The pass uses a ping-pong strategy:
- *   1. Render (mapFbo + wallpaper) -> tempFbo  using the custom "wallpaper_replace_black" shader.
+ *   1. Render (mapFbo + wallpaper) -> tempFbo  using the "wallpaper_replace_black" shader.
  *   2. Blit tempFbo -> mapFbo               using the standard ENTITY_OUTLINE_BLIT pipeline.
  *
  * Xaero then composites mapFbo onto the screen normally, now with wallpaper
- * visible wherever tiles had black unexplored sub-areas.
+ * visible wherever tiles had unexplored sub-areas.
  */
 @Mixin(GuiMap.class)
 public class GuiMapBackgroundMixin {
 
     /**
-     * Custom pipeline: two-sampler blit that replaces opaque black with wallpaper.
-     *   InSampler      = Xaero's rendered map FBO texture
+     * Custom pipeline: two-sampler blit that replaces very-dark pixels with wallpaper.
+     *   InSampler        = Xaero's rendered map FBO texture
      *   WallpaperSampler = wallpaper texture
      */
     private static final RenderPipeline WALLPAPER_REPLACE_PIPELINE = RenderPipelines.register(
             RenderPipeline.builder()
                     .withLocation(Identifier.of("xaerobackground", "pipeline/wallpaper_replace_black"))
-                    .withVertexShader("core/blit_screen")   // reuse minecraft:core/blit_screen.vsh
+                    .withVertexShader("core/blit_screen")
                     .withFragmentShader(Identifier.of("xaerobackground", "core/wallpaper_replace_black"))
                     .withSampler("InSampler")
                     .withSampler("WallpaperSampler")
